@@ -1,0 +1,258 @@
+# LND Interpolation — per-pixel MLP in latent space  (z32×32×32 variant)
+#
+# First stage: frozen QRLDCAEModel from experiment 09 (z32×32×32 latent).
+#   - Latent shape: (B, 32, 32, 32)
+#   - Input to interpolator:  cat(z_0, z_6)  → (B, 64, 32, 32)
+#   - Output of interpolator: cat(z_1…z_5)  → (B, 160, 32, 32)
+#
+# No diffusion — a per-pixel fully-connected MLP (1×1 conv stack) maps
+# the boundary latent pair directly to all 5 intermediate latents in one
+# forward pass.
+#
+# Set FIRST_STAGE_CKPT to the path of the best checkpoint from exp 09.
+
+_experiment_name: "18-lnd-interp"
+_run_name: "18-lnd-z32-${now:%Y%m%d_%H%M%S}"
+_work_dir: ${oc.env:PWD}/_work/${_experiment_name}/${_run_name}
+_assets_dir: ${oc.env:PWD}/_assets
+_dataset_path: "/mnt/tier1/project/p200177/DE_371_bis/meps-2p5km-2020-2025-1h-v2_subdomain_subvars_rechu.zarr"
+_first_stage_ckpt: /mnt/tier2/project/p200177/u101329/DE371_bis/diffusion-interpolation/_assets/09-winds-focal/09-winds-focal-z32x32x32-20260609_145310/last.ckpt
+_mlflow_tracking_uri: file:./_saved/mlflow
+
+hydra:
+  job_logging:
+    root:
+      level: INFO
+    loggers:
+      lightning.pytorch:
+        level: INFO
+      src:
+        level: INFO
+
+_target_: dssml.runners.DefaultTrainer
+resume: false
+
+plfit:
+  ckpt_path:
+
+pltrainer:
+  accelerator: gpu
+  devices: auto
+  strategy: ddp
+  precision: 32-true
+  max_epochs: 1000
+  log_every_n_steps: 50
+  deterministic: false
+  num_nodes: 1
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1.0
+  enable_progress_bar: false
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+
+manifest:
+  _target_: dssml.data.helpers.manifests.MepsZarrManifest
+  dataset_path: ${_dataset_path}
+  indices_to_avoid: [31956, 31957, 31958, 31959, 31960, 31961, 31962, 31963, 31964,
+    31965, 31966, 31967, 31968, 31969, 31970, 31971, 31972, 31973, 31974, 31975,
+    31976, 31977, 31978, 31979, 31980, 31981, 31982, 31983, 31984, 31985, 31986,
+    31987, 31988, 31989, 31990, 31991]
+  exclude_when_end_indices_divisible_by: 18
+  variables:
+    - name: '10si'
+      normalization: z-score
+      loss_weight: 3.0
+    - name: '10u'
+      normalization: z-score
+      loss_weight: 3.0
+    - name: '10v'
+      normalization: z-score
+      loss_weight: 3.0
+    - name: '2d'
+      normalization: z-score
+      loss_weight: 1.0
+    - name: '2t'
+      normalization: z-score
+      loss_weight: 3.0
+    - name: 'cbh'
+      normalization: z-score
+      loss_weight: 0.1
+    - name: 'hcc'
+      normalization: none
+      loss_weight: 0.1
+    - name: 'lcc'
+      normalization: none
+      loss_weight: 0.1
+    - name: 'lsm'
+      normalization: none
+      loss_weight: null
+    - name: 'mcc'
+      normalization: none
+      loss_weight: 0.1
+    - name: 'sp'
+      normalization: z-score
+      loss_weight: 8.0
+    - name: 't_850'
+      normalization: z-score
+      loss_weight: 5.0
+    - name: 'tcc'
+      normalization: none
+      loss_weight: 0.1
+    - name: 'tcw'
+      normalization: std
+      loss_weight: 1.0
+    - name: 'tp'
+      normalization: std
+      loss_weight: 1.5
+    - name: 'u_850'
+      normalization: z-score
+      loss_weight: 2.0
+    - name: 'v_850'
+      normalization: z-score
+      loss_weight: 2.0
+    - name: 'w_850'
+      normalization: z-score
+      loss_weight: 0.2
+    - name: 'q_850'
+      normalization: std
+      loss_weight: 1.0
+
+  reshape_to: [256, 256]
+
+  # 7-frame windows: t=0 and t=6 are boundaries; t=1..5 are interpolation targets
+  splits:
+    type: date_based_window
+    window_size: 7
+    periods:
+      - train:
+          start: "2021-01-01"
+          end: "2023-12-30"
+      - val:
+          start: "2024-01-11"
+          end: "2024-01-20"
+      - val:
+          start: "2024-03-11"
+          end: "2024-03-20"
+      - val:
+          start: "2024-05-11"
+          end: "2024-05-20"
+      - val:
+          start: "2024-07-11"
+          end: "2024-07-20"
+      - val:
+          start: "2024-09-11"
+          end: "2024-09-20"
+      - val:
+          start: "2024-11-11"
+          end: "2024-11-20"
+      - test:
+          start: "2020-03-04"
+          end: "2020-03-08"
+
+normalizer:
+  _target_: dssml.data.helpers.normalizers.MultiNormalizer
+
+datamodule:
+  _target_: dssml.data.modules.meps.MEPSZarrWindowDataModule
+  dl_kwargs:
+    batch_size: 4
+    num_workers: 16
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 4
+
+# ── Model ─────────────────────────────────────────────────────────────────────
+
+model:
+  _target_: dssml.models.interp.LatentNDIModel
+
+  n_interp: 5
+
+  # How to encode frames from the frozen AE:
+  #   "mean"   → deterministic posterior mean μ (correct for QRLDCAEModel)
+  #   "sample" → reparameterization sample (use with variational AEs)
+  encode_mode: "mean"
+
+  # ── Frozen first stage (exp 09 QRLDCAEModel, z32×32×32) ───────────────────
+  first_stage_conf:
+    _target_: dssml.models.ae.QRLDCAEModel
+    ckpt_path: ${_first_stage_ckpt}
+    ae_conf:
+      _target_: dssml.networks.ae.QRLAutoEncoder
+      in_channels: 19
+      latent_channels: 32
+      hid_channels: [96, 192, 384]
+      hid_blocks: [2, 2, 2]
+      patch_size: 2
+      stride: 2
+      saturation_mode: "softclip2"
+      saturation_bound: 5.0
+      attn_levels: [2]
+      dropout: 0.0
+      identity_init: true
+      residual_autoencoding: true
+
+  # ── Per-pixel FC interpolation network ─────────────────────────────────────
+  # in_channels and out_channels are set automatically (2*C_z and n_interp*C_z).
+  # For z32: in=64, out=160, hidden=512.
+  interp_conf:
+    _target_: dssml.networks.interp.LatentFCInterpolator
+    hidden_channels: 512
+    n_layers: 6
+    n_groups: 16
+    dropout: 0.0
+
+  # ── Per-channel latent whitening ────────────────────────────────────────────
+  # Same statistics as used in exp 14 (same first-stage checkpoint).
+  # Computed with: python scripts/compute_latent_stats.py --n-batches 5
+  latent_mean: [0.121091, -0.372476, -0.740632, -0.755412, 0.516542, -0.222734, 0.414304, -0.087052, -0.458132, 0.007211, 0.059729, 0.187013, -0.510744, 0.081732, 0.346156, -0.301207, 0.288399, 0.358311, -1.284236, 0.176543, -0.062652, 0.170442, -0.634424, 0.462298, 0.506207, -0.353654, 0.094351, -0.104481, -0.100741, 0.118451, -0.282225, -0.078623]
+  latent_std:  [0.321220, 0.348112, 0.238354, 0.291497, 0.370101, 0.322325, 0.333204, 0.330568, 0.368369, 0.304048, 0.348065, 0.253296, 0.277222, 0.313701, 0.286001, 0.195171, 0.326412, 0.357522, 0.245233, 0.363475, 0.324862, 0.382494, 0.259870, 0.393715, 0.285882, 0.278593, 0.343900, 0.333517, 0.389821, 0.233108, 0.309796, 0.246555]
+
+  # ── Optimizer ───────────────────────────────────────────────────────────────
+  optimizers_conf:
+    - optimizer:
+        _target_: torch.optim.Adam
+        lr: 1.0e-04
+        betas: [0.9, 0.999]
+      scheduler:
+        _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+        T_max: 2200000   # 1000 epochs × ~442 steps/epoch (3533 samples / 16 effective batch)
+        eta_min: 1.0e-06
+
+# ── Callbacks ─────────────────────────────────────────────────────────────────
+
+callbacks:
+  - _target_: dssml.callbacks.meps.diffusion.LatentInterpSampler
+    output_path: ${_work_dir}/samples.zarr
+    variables: ["2t", "10si", "10u", "10v", "tp", "2d"]
+    num_samples: 8
+    log_interval: 5
+    seed: 42
+    boundary_mode: 'gt'
+
+  - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    monitor: val_loss
+    mode: min
+    save_top_k: 3
+    save_last: true
+    filename: "{epoch:03d}-{step:05d}-{val_loss:.4f}"
+    dirpath: ${_work_dir}/checkpoints
+
+  - _target_: lightning.pytorch.callbacks.LearningRateMonitor
+    logging_interval: epoch
+
+  - _target_: lightning.pytorch.callbacks.EarlyStopping
+    monitor: val_loss
+    mode: min
+    patience: 60
+    min_delta: 0.0001
+    verbose: true
+
+# ── Logger ─────────────────────────────────────────────────────────────────────
+
+logger:
+  _target_: lightning.pytorch.loggers.MLFlowLogger
+  experiment_name: ${_experiment_name}
+  run_name: ${_run_name}
+  tracking_uri: ${_mlflow_tracking_uri}
+  synchronous: false

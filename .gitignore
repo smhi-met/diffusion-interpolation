@@ -1,7 +1,19 @@
+TODO.md
+CLAUDE.md
+run-salloc.out
+lola
+.vscode
+run-jupyterlab.err
+run-jupyterlab.out
+_assets
+**/*.ipynb_checkpoints
+mlruns/
 _saved
+_data
 _diffusion-interp-results
 _results
-
+trash
+**/**.egg-info
 figures/
 *.pyc
 _work*
@@ -12,7 +24,16 @@ __pycache__/
 outputs/
 slurm*.out
 *.log
+*.swp
 old
 
 plots/plots
 plots/.ipynb_checkpoints
+notebooks/.ipynb_checkpoints/
+notebooks/plots/
+notebooks/**/*.png
+ecsbatch.log.*
+lnd-generate*.out
+lnd-generate*.err
+
+cleaning/

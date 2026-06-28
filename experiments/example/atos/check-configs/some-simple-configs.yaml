@@ -1,0 +1,8 @@
+# @package _global_
+
+_experiment_name: "check-simple-configs"
+_run_name: "test_${now:%Y%m%d_%H%M%S}"
+_work_dir: ${oc.env:PWD}/_work/${_experiment_name}/${_run_name}
+
+model:
+  some_value: 42

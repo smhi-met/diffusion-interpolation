@@ -1,0 +1,254 @@
+# LND Interpolation — per-pixel MLP in latent space  (z32×8×8 QRL-VAE variant)
+#
+# First stage: frozen QRLVAEModel from experiment 13 (z32×8×8 latent, variational).
+#   - Actual architecture: latent_channels=32, default hid_channels=(96,192,384,384),
+#     patch_size=2, stride=2 → spatial downsampling 32× → 256/32 = 8×8
+#   - Latent shape: (B, 32, 8, 8)
+#   - Input to interpolator:  cat(z_0, z_6)  → (B, 64, 8, 8)
+#   - Output of interpolator: cat(z_1…z_5)  → (B, 160, 8, 8)
+#
+# encode_mode="sample" draws from the posterior q(z|x) for the boundary frames
+# during training — this teaches the interpolator to handle the stochasticity
+# of the variational encoder.  At inference "mean" gives deterministic output.
+#
+# NOTE: latent_mean / latent_std are not set here.  Compute them with:
+#   python scripts/compute_latent_stats.py \
+#     --config experiments/mlx/18-lnd-interp/18-lnd-interp-z32-qrl-vae.yaml \
+#     --n-batches 10
+# and fill in the values below before the first long training run.
+
+_experiment_name: "18-lnd-interp"
+_run_name: "18-lnd-z32-qrl-vae-${now:%Y%m%d_%H%M%S}"
+_work_dir: ${oc.env:PWD}/_work/${_experiment_name}/${_run_name}
+_assets_dir: ${oc.env:PWD}/_assets
+_dataset_path: "/mnt/tier1/project/p200177/DE_371_bis/meps-2p5km-2020-2025-1h-v2_subdomain_subvars_rechu.zarr"
+_first_stage_ckpt: /mnt/tier2/project/p200177/u101329/DE371_bis/diffusion-interpolation/_assets/13-qrl-vae-winds-focal/best.ckpt
+_mlflow_tracking_uri: file:./_saved/mlflow
+
+hydra:
+  job_logging:
+    root:
+      level: INFO
+    loggers:
+      lightning.pytorch:
+        level: INFO
+      src:
+        level: INFO
+
+_target_: dssml.runners.DefaultTrainer
+resume: false
+
+plfit:
+  ckpt_path:
+
+pltrainer:
+  accelerator: gpu
+  devices: auto
+  strategy: ddp
+  precision: 32-true
+  max_epochs: 1000
+  log_every_n_steps: 50
+  deterministic: false
+  num_nodes: 1
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1.0
+  enable_progress_bar: false
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+
+manifest:
+  _target_: dssml.data.helpers.manifests.MepsZarrManifest
+  dataset_path: ${_dataset_path}
+  indices_to_avoid: [31956, 31957, 31958, 31959, 31960, 31961, 31962, 31963, 31964,
+    31965, 31966, 31967, 31968, 31969, 31970, 31971, 31972, 31973, 31974, 31975,
+    31976, 31977, 31978, 31979, 31980, 31981, 31982, 31983, 31984, 31985, 31986,
+    31987, 31988, 31989, 31990, 31991]
+  exclude_when_end_indices_divisible_by: 18
+  variables:
+    - name: '10si'
+      normalization: z-score
+      loss_weight: 3.0
+    - name: '10u'
+      normalization: z-score
+      loss_weight: 3.0
+    - name: '10v'
+      normalization: z-score
+      loss_weight: 3.0
+    - name: '2d'
+      normalization: z-score
+      loss_weight: 1.0
+    - name: '2t'
+      normalization: z-score
+      loss_weight: 3.0
+    - name: 'cbh'
+      normalization: z-score
+      loss_weight: 0.1
+    - name: 'hcc'
+      normalization: none
+      loss_weight: 0.1
+    - name: 'lcc'
+      normalization: none
+      loss_weight: 0.1
+    - name: 'lsm'
+      normalization: none
+      loss_weight: null
+    - name: 'mcc'
+      normalization: none
+      loss_weight: 0.1
+    - name: 'sp'
+      normalization: z-score
+      loss_weight: 8.0
+    - name: 't_850'
+      normalization: z-score
+      loss_weight: 5.0
+    - name: 'tcc'
+      normalization: none
+      loss_weight: 0.1
+    - name: 'tcw'
+      normalization: std
+      loss_weight: 1.0
+    - name: 'tp'
+      normalization: std
+      loss_weight: 1.5
+    - name: 'u_850'
+      normalization: z-score
+      loss_weight: 2.0
+    - name: 'v_850'
+      normalization: z-score
+      loss_weight: 2.0
+    - name: 'w_850'
+      normalization: z-score
+      loss_weight: 0.2
+    - name: 'q_850'
+      normalization: std
+      loss_weight: 1.0
+
+  reshape_to: [256, 256]
+
+  splits:
+    type: date_based_window
+    window_size: 7
+    periods:
+      - train:
+          start: "2021-01-01"
+          end: "2023-12-30"
+      - val:
+          start: "2024-01-11"
+          end: "2024-01-20"
+      - val:
+          start: "2024-03-11"
+          end: "2024-03-20"
+      - val:
+          start: "2024-05-11"
+          end: "2024-05-20"
+      - val:
+          start: "2024-07-11"
+          end: "2024-07-20"
+      - val:
+          start: "2024-09-11"
+          end: "2024-09-20"
+      - val:
+          start: "2024-11-11"
+          end: "2024-11-20"
+      - test:
+          start: "2020-03-04"
+          end: "2020-03-08"
+
+normalizer:
+  _target_: dssml.data.helpers.normalizers.MultiNormalizer
+
+datamodule:
+  _target_: dssml.data.modules.meps.MEPSZarrWindowDataModule
+  dl_kwargs:
+    batch_size: 4
+    num_workers: 16
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 4
+
+# ── Model ─────────────────────────────────────────────────────────────────────
+
+model:
+  _target_: dssml.models.interp.LatentNDIModel
+
+  n_interp: 5
+
+  # "sample" → draw from q(z|x) during training so the interpolator learns
+  # to handle the posterior spread from the variational encoder.
+  # At inference the boundary latents are always the deterministic mean.
+  encode_mode: "sample"
+
+  # ── Frozen first stage (exp 13 QRLVAEModel, z32×8×8) ─────────────────────
+  first_stage_conf:
+    _target_: dssml.models.ae.QRLVAEModel
+    ckpt_path: ${_first_stage_ckpt}
+    # Architecture must match the checkpoint (latent_channels=32, default hid)
+    ae_conf:
+      _target_: dssml.networks.ae.QRLVariationalAutoEncoder
+      in_channels: 19
+      latent_channels: 32
+      residual_autoencoding: true
+
+  # ── Per-pixel FC interpolation network ─────────────────────────────────────
+  # For z32×8×8: in=64, out=160, hidden=512.
+  interp_conf:
+    _target_: dssml.networks.interp.LatentFCInterpolator
+    hidden_channels: 256
+    n_layers: 6
+    n_groups: 8
+    dropout: 0.3
+
+  # ── Per-channel latent whitening ────────────────────────────────────────────
+  # Compute before training with: python scripts/compute_latent_stats.py
+  # Then fill in the 32-element lists below.
+  # latent_mean: [...]
+  # latent_std:  [...]
+
+  # ── Optimizer ───────────────────────────────────────────────────────────────
+  optimizers_conf:
+    - optimizer:
+        _target_: torch.optim.Adam
+        lr: 1.0e-04
+        betas: [0.9, 0.999]
+      scheduler:
+        _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+        T_max: 2200000
+        eta_min: 1.0e-06
+
+# ── Callbacks ─────────────────────────────────────────────────────────────────
+
+callbacks:
+  - _target_: dssml.callbacks.meps.diffusion.LatentInterpSampler
+    output_path: ${_work_dir}/samples.zarr
+    variables: ["2t", "10si", "10u", "10v", "tp", "2d"]
+    num_samples: 8
+    log_interval: 5
+    seed: 42
+    boundary_mode: 'gt'
+
+  - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    monitor: val_loss
+    mode: min
+    save_top_k: 3
+    save_last: true
+    filename: "{epoch:03d}-{step:05d}-{val_loss:.4f}"
+    dirpath: ${_work_dir}/checkpoints
+
+  - _target_: lightning.pytorch.callbacks.LearningRateMonitor
+    logging_interval: epoch
+
+  - _target_: lightning.pytorch.callbacks.EarlyStopping
+    monitor: val_loss
+    mode: min
+    patience: 60
+    min_delta: 0.0001
+    verbose: true
+
+# ── Logger ─────────────────────────────────────────────────────────────────────
+
+logger:
+  _target_: lightning.pytorch.loggers.MLFlowLogger
+  experiment_name: ${_experiment_name}
+  run_name: ${_run_name}
+  tracking_uri: ${_mlflow_tracking_uri}
+  synchronous: false

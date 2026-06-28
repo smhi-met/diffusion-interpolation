@@ -1,0 +1,266 @@
+# Latent EDM — Two-stage temporal interpolation  (z64×16×16 variant)
+#
+# First stage: frozen LoLADCAEModel from experiment 08 (z64×16×16 latent).
+#   - Latent shape: (B, 64, 16, 16)
+#   - Conditioning: cat(z_0, z_6)  → (B, 128, 16, 16)
+#   - Target:       cat(z_1…z_5)  → (B, 320, 16, 16)
+#   - UNet input:                   (B, 448, 16, 16)
+#
+# Shallower UNet than the z32 variant (16×16 spatial → fewer levels needed).
+# Set FIRST_STAGE_CKPT to the path of the best checkpoint from exp 08.
+
+_experiment_name: "14-latent-edm-intrp"
+_run_name: "14-edm-z64-${now:%Y%m%d_%H%M%S}"
+_work_dir: ${oc.env:PWD}/_work/${_experiment_name}/${_run_name}
+_assets_dir: ${oc.env:PWD}/_assets
+_dataset_path: "/mnt/tier1/project/p200177/DE_371_bis/meps-2p5km-2020-2025-1h-v2_subdomain_subvars_rechu.zarr"
+_first_stage_ckpt: /mnt/tier2/project/p200177/u101329/DE371_bis/diffusion-interpolation/_assets/08-lola-z64/lola_z64_20260609_025027/last.ckpt
+_mlflow_tracking_uri: file:./_saved/mlflow
+
+hydra:
+  job_logging:
+    root:
+      level: INFO
+    loggers:
+      lightning.pytorch:
+        level: INFO
+
+_target_: dssml.runners.DefaultTrainer
+resume: false
+
+plfit:
+  ckpt_path:
+
+pltrainer:
+  accelerator: gpu
+  devices: auto
+  strategy: ddp
+  precision: 32-true
+  max_epochs: 1000
+  log_every_n_steps: 50
+  deterministic: false
+  num_nodes: 1
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1.0
+  enable_progress_bar: false
+
+# ── Data ─────────────────────────────────────────────────────────────────────
+# (identical to z32 variant — same variables, same splits)
+
+manifest:
+  _target_: dssml.data.helpers.manifests.MepsZarrManifest
+  dataset_path: ${_dataset_path}
+  indices_to_avoid: [31956, 31957, 31958, 31959, 31960, 31961, 31962, 31963, 31964,
+    31965, 31966, 31967, 31968, 31969, 31970, 31971, 31972, 31973, 31974, 31975,
+    31976, 31977, 31978, 31979, 31980, 31981, 31982, 31983, 31984, 31985, 31986,
+    31987, 31988, 31989, 31990, 31991]
+  exclude_when_end_indices_divisible_by: 18 
+  variables:
+    - name: '10si'
+      normalization: z-score
+      loss_weight: 3.0
+    - name: '10u'
+      normalization: z-score
+      loss_weight: 3.0
+    - name: '10v'
+      normalization: z-score
+      loss_weight: 3.0
+    - name: '2d'
+      normalization: z-score
+      loss_weight: 1.0
+    - name: '2t'
+      normalization: z-score
+      loss_weight: 3.0
+    - name: 'cbh'
+      normalization: z-score
+      loss_weight: 0.1
+    - name: 'hcc'
+      normalization: none
+      loss_weight: 0.1
+    - name: 'lcc'
+      normalization: none
+      loss_weight: 0.1
+    - name: 'lsm'
+      normalization: none
+      loss_weight: null
+    - name: 'mcc'
+      normalization: none
+      loss_weight: 0.1
+    - name: 'sp'
+      normalization: z-score
+      loss_weight: 8.0
+    - name: 't_850'
+      normalization: z-score
+      loss_weight: 5.0
+    - name: 'tcc'
+      normalization: none
+      loss_weight: 0.1
+    - name: 'tcw'
+      normalization: std
+      loss_weight: 1.0
+    - name: 'tp'
+      normalization: std
+      loss_weight: 1.5
+    - name: 'u_850'
+      normalization: z-score
+      loss_weight: 2.0
+    - name: 'v_850'
+      normalization: z-score
+      loss_weight: 2.0
+    - name: 'w_850'
+      normalization: z-score
+      loss_weight: 0.2
+    - name: 'q_850'
+      normalization: std
+      loss_weight: 1.0
+
+  reshape_to: [256, 256]
+
+  splits:
+    type: date_based_window
+    window_size: 7
+    periods:
+      - train:
+          start: "2021-01-01"
+          end: "2023-12-30"
+      - val:
+          start: "2024-01-11"
+          end: "2024-01-20"
+      - val:
+          start: "2024-03-11"
+          end: "2024-03-20"
+      - val:
+          start: "2024-05-11"
+          end: "2024-05-20"
+      - val:
+          start: "2024-07-11"
+          end: "2024-07-20"
+      - val:
+          start: "2024-09-11"
+          end: "2024-09-20"
+      - val:
+          start: "2024-11-11"
+          end: "2024-11-20"
+      - test:
+          start: "2020-03-04"
+          end: "2020-03-08"
+
+normalizer:
+  _target_: dssml.data.helpers.normalizers.MultiNormalizer
+
+datamodule:
+  _target_: dssml.data.modules.meps.MEPSZarrWindowDataModule
+  dl_kwargs:
+    batch_size: 4
+    num_workers: 16
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 4
+
+# ── Model ─────────────────────────────────────────────────────────────────────
+
+model:
+  _target_: dssml.models.diffusion.LatentEDMModel
+
+  n_interp: 5
+  encode_mode: "mean"
+
+  # ── Frozen first stage (exp 08 LoLADCAEModel, z64×16×16) ─────────────────
+  first_stage_conf:
+    _target_: dssml.models.ae.LoLADCAEModel
+    ckpt_path: ${_first_stage_ckpt}
+    ae_conf:
+      _target_: dssml.networks.ae.LoLAAutoEncoder
+      in_channels: 19
+      latent_channels: 64
+      hid_channels: [96, 192, 384, 384]
+      hid_blocks: [2, 2, 2, 2]
+      patch_size: 2
+      stride: 2
+      saturation_mode: "softclip2"
+      saturation_bound: 5.0
+      attn_levels: [2]
+      dropout: 0.0
+      identity_init: true
+      residual_autoencoding: true
+
+  # ── Denoising UNet ─────────────────────────────────────────────────────
+  # Spatial: 16×16 (level 0) → 8×8 (level 1) → 4×4 (bottleneck)
+  # Shallower than z32 variant since 16×16 is already small.
+  unet_conf:
+    _target_: dssml.networks.unet.LatentUNet
+    base_channels: 192
+    channel_mult: [1, 2, 4]
+    num_res_blocks: 2
+    attn_levels:
+    dropout: 0.0
+    n_groups: 32
+    n_heads: 4
+
+  # ── Per-channel latent whitening ────────────────────────────────────────
+  # Computed with: python scripts/compute_latent_stats.py --n-batches 5
+  # After whitening every channel has mean≈0 and std≈1 → sigma_data=1.0 exact.
+  latent_mean: [0.244803, 0.065097, 0.051942, -0.014525, 0.061254, 0.036363, 0.046976, -0.048167, 0.231060, 0.218981, -0.027186, -0.212817, -0.179883, -0.368443, -0.407121, 0.009069, 0.025526, 0.268481, 0.051199, 0.103877, 0.137901, 0.005231, -0.226412, -0.087662, -0.120647, 0.017691, -0.018632, -0.010440, 0.031343, -0.110515, 0.038173, -0.032356, -0.013653, 0.056238, -0.037503, -0.243221, -0.046369, 0.017308, 0.016843, 0.143862, -0.041942, -0.015489, 0.128511, -0.066665, -0.346103, 0.151829, 0.261328, 0.015670, -0.013819, 0.103743, 0.043371, 0.163143, 0.026752, 0.077873, -0.059287, -0.153049, -0.035449, 0.217276, 0.025733, 0.035711, -0.050317, -0.031365, 0.039543, -0.021395]
+  latent_std:  [0.161699, 0.181684, 0.209714, 0.124495, 0.307498, 0.218340, 0.213185, 0.188636, 0.564680, 0.536285, 0.150823, 0.182823, 0.144568, 0.261604, 0.297593, 0.417428, 0.248890, 0.152738, 0.159228, 0.175118, 0.213097, 0.196376, 0.336733, 0.276430, 0.196564, 0.168534, 0.174726, 0.220360, 0.234621, 0.179591, 0.178185, 0.223438, 0.187599, 0.191252, 0.118429, 0.180438, 0.244438, 0.306764, 0.131918, 0.178482, 0.216899, 0.394471, 0.184300, 0.133588, 0.180017, 0.517474, 0.223920, 0.247941, 0.157898, 0.154325, 0.171568, 0.158768, 0.212941, 0.183263, 0.365576, 0.345059, 0.234424, 0.273603, 0.145421, 0.136435, 0.156857, 0.123452, 0.134408, 0.230696]
+
+  # ── EDM noise schedule ──────────────────────────────────────────────────
+  # sigma_data=1.0 is correct after whitening (all channels have unit std).
+  sigma_data: 1.0
+  # Karras default p_mean=-1.2 is correct for unit-std latents.
+  p_mean: -1.2
+  p_std: 1.2
+
+  sampler_conf:
+    _target_: dssml.samplers.HeunEDMSampler
+    steps: 50
+    sigma_min: 0.002
+    sigma_max: 15.0
+    rho: 7.0
+    S_churn: 0.0
+    S_noise: 1.0
+
+  optimizers_conf:
+    - optimizer:
+        _target_: torch.optim.Adam
+        lr: 1.0e-04
+        betas: [0.9, 0.999]
+      scheduler:
+        _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+        T_max: 2200000   # 1000 epochs × ~442 steps/epoch (3533 samples / 16 effective batch)
+        eta_min: 1.0e-06
+
+# ── Callbacks ─────────────────────────────────────────────────────────────────
+
+callbacks:
+  - _target_: dssml.callbacks.meps.diffusion.LatentInterpSampler
+    output_path: ${_work_dir}/samples.zarr
+    variables: ["2t", "10si", "10u", "10v", "tp", "2d"]
+    num_samples: 8
+    log_interval: 5
+    seed: 42
+    boundary_mode: 'gt'            # "gt" = exact ground-truth boundaries; "reconstruct" = encode→decode (to audit AE quality)
+
+  - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    monitor: val_loss
+    mode: min
+    save_top_k: 3
+    save_last: true
+    filename: "{epoch:03d}-{step:05d}-{val_loss:.4f}"
+    dirpath: ${_work_dir}/checkpoints
+
+  - _target_: lightning.pytorch.callbacks.LearningRateMonitor
+    logging_interval: epoch
+
+  - _target_: lightning.pytorch.callbacks.EarlyStopping
+    monitor: val_loss
+    mode: min
+    patience: 60
+    min_delta: 0.0001
+    verbose: true
+
+logger:
+  _target_: lightning.pytorch.loggers.MLFlowLogger
+  experiment_name: ${_experiment_name}
+  run_name: ${_run_name}
+  tracking_uri: ${_mlflow_tracking_uri}
+  synchronous: false

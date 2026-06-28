@@ -1,0 +1,233 @@
+_experiment_name: "simple-ae"
+_run_name: "test_aaa_${now:%Y%m%d_%H%M%S}"
+_work_dir: ${oc.env:PWD}/_work/${_experiment_name}/${_run_name}
+_dataset_path: "/mnt/tier1/project/p200177/DE_371_bis/meps-2p5km-2020-2025-1h-v2_subdomain_subvars_rechu.zarr"
+## 
+_mlflow_tracking_uri: file:./_saved/mlflow
+
+hydra:
+  job_logging:
+    root:
+      level: INFO
+    loggers:
+      lightning.pytorch:
+        level: INFO
+      src:
+        level: INFO
+
+ 
+_target_: dssml.runners.DefaultTrainer
+resume: false
+plfit:
+  ckpt_path:
+pltrainer:
+  accelerator: gpu
+  enable_checkpointing: true
+  devices: auto #  4 for ddp_spawn and 1 for ddp
+  strategy: ddp # single_device #ddp
+  precision: 32-true   # 32-true #bf16-mixed # TODO: implement mixed precision
+  max_epochs: 101
+  log_every_n_steps: 50
+  deterministic: false
+  num_nodes: 1 
+  accumulate_grad_batches: 1  # Effective batch size = per_gpu_batch_size * accumulate_grad_batches * num_gpus * num_nodes.
+  gradient_clip_val: 1.0 # If the norm of all gradients exceeds 1.0, scale them down so the norm = 1.0. This keeps updates stable (common in RNNs, transformers, unstable optimizers).
+  enable_progress_bar: false
+  profiler: simple
+
+
+
+manifest:
+  _target_: dssml.data.helpers.manifests.MepsZarrManifest
+  dataset_path: ${_dataset_path}
+  indices_to_avoid: [31956, 31957, 31958, 31959, 31960, 31961, 31962, 31963, 31964,
+       31965, 31966, 31967, 31968, 31969, 31970, 31971, 31972, 31973,
+       31974, 31975, 31976, 31977, 31978, 31979, 31980, 31981, 31982,
+       31983, 31984, 31985, 31986, 31987, 31988, 31989, 31990, 31991]
+
+  variables: 
+    - '10si'
+    - '10u'
+    - '10v'
+    - '2d'
+    - '2t'
+    - 'cbh'
+    - 'fog'
+    - 'hcc'
+    - 'lcc'
+    - 'lsm'
+    - 'mcc'
+    - 'q_850'
+    - 'sp'
+    - 't_850'
+    - 'tcc'
+    - 'tcw'
+    - 'tp'
+    - 'u_850'
+    - 'v_850'
+    - 'vis'
+    - 'w_850'
+    - 'z'
+  reshape_to: [256,256] 
+  splits:
+    type: date_based
+
+    periods:
+
+    # - train:
+    #     start: "2020-01-01"
+    #     end: "2023-12-30"
+    # - val:
+    #     start: "2024-01-11"
+    #     end: "2024-01-20"
+
+    # - val:
+    #     start: "2024-02-11"
+    #     end: "2024-02-20"
+
+    # - test:
+    #     start: "2024-01-01"
+    #     end: "2024-01-10"
+    # - test:
+    #     start: "2024-02-01"
+    #     end: "2024-02-10"
+
+    # - train:
+    #     start: "2020-02-06"
+    #     end: "2020-02-28"
+    #   val:
+    #     start: "2020-02-29"
+    #     end: "2020-03-03"
+    #   test:
+    #     start: "2020-03-04"
+    #     end: "2020-03-08"
+ 
+    # - train:
+    #     start: "2021-01-01"
+    #     end: "2021-03-31"
+    # - val:
+    #     start: "2024-01-28"
+    #     end: "2024-04-03"
+    # - test:
+    #     start: "2020-03-04"
+    #     end: "2020-03-08"
+
+    - train:
+        start: "2020-01-01"
+        end: "2023-12-30"
+    - val:
+        start: "2024-01-11"
+        end: "2024-01-20"
+    - val:
+        start: "2024-03-11"
+        end: "2024-03-20"
+    - val:
+        start: "2024-05-11"
+        end: "2024-05-20"
+    - val:
+        start: "2024-07-11"
+        end: "2024-07-20"
+    - val:
+        start: "2024-09-11"
+        end: "2024-09-20"     
+    - val:
+        start: "2024-11-11"
+        end: "2024-11-20"             
+    - test:
+        start: "2020-03-04"
+        end: "2020-03-08"
+
+normalizer:
+  _target_: dssml.data.helpers.normalizers.SymRangeNormalizer
+  norm_const: 1.0
+  eps: 1e-6
+
+
+
+datamodule:
+  _target_: dssml.data.modules.meps.MEPSZarrWindowDataModule
+  dl_kwargs:
+    batch_size: 8
+    num_workers: 8
+    pin_memory: true
+    persistent_workers: true
+
+
+model:
+  _target_: dssml.models.ae.SimpleAutoEncoderModel
+  auto_encoder_conf:
+    _target_: dssml.networks.ae.AutoEncoderAAA
+    input_channels: 22
+    latent_dim: 64
+  # Shared between all models inherited from ModelBase
+  optimizers_conf:
+    - optimizer:
+        _target_: torch.optim.AdamW
+        lr: 5.0e-5
+        weight_decay: 1.0e-4
+      scheduler:
+        _target_: torch.optim.lr_scheduler.ExponentialLR
+        gamma: 0.9999
+
+callbacks:
+  - _target_: dssml.callbacks.meps.ae.LatentSpaceSampler
+    variables: ["2t","10si", "10u", "10v", "tp", "2d"]
+    output_path: ${_work_dir}/samples.zarr
+
+
+  - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    monitor: val_loss
+    mode: min
+    save_top_k: -1
+    save_last: true
+    filename: "{epoch:03d}-{step:05d}-{val_loss:.4f}"
+    dirpath: ${_work_dir}/checkpoints
+
+  - _target_: lightning.pytorch.callbacks.LearningRateMonitor
+    logging_interval: epoch
+
+logger:
+  _target_: lightning.pytorch.loggers.MLFlowLogger
+  experiment_name: ${_experiment_name}
+  run_name: ${_run_name}
+  tracking_uri: ${_mlflow_tracking_uri}
+  # tags:
+  #   project: "diffusion_interpolation"
+  synchronous: false
+
+
+
+#   run_name: ${_run_name}  # if None, use timestamp
+# # Hydra 1.3+ config
+# seed: 42
+
+
+
+
+
+
+#   drop_ensemble: true
+#   variables: ['10u','10v','2t']
+#   # Loader
+#   batch_size: 32
+#   num_workers: 4
+#   pin_memory: true
+#   shuffle_train: true
+#   cells_reshape: [256,256] 
+#   splitter:
+#       _target_: data.meps.splits.BlockWindowSplitter
+#       train: 20
+#       val: 2
+#       test: 2
+#       skip: 1  # skpi after each
+#       window_size: 7  
+#   normalizer:
+#     _target_: data.meps.normalize.symrange.SymRangeNormalizer
+#     norm_const: 1.0
+#     eps: 1e-6
+  
+  
+
+
+ 
+ 

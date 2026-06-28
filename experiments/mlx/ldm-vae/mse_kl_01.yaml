@@ -1,0 +1,167 @@
+# Inherits everything from mse_only.yaml, only model block changes
+_experiment_name: "ldm-vae"
+_run_name: "mse_kl_01_${now:%Y%m%d_%H%M%S}"
+
+_work_dir: ${oc.env:PWD}/_work/${_experiment_name}/${_run_name}
+_dataset_path: "/mnt/tier1/project/p200177/DE_371_bis/meps-2p5km-2020-2025-1h-v2_subdomain_subvars_rechu.zarr"
+_mlflow_tracking_uri: file:./_saved/mlflow
+
+hydra:
+  job_logging:
+    root:
+      level: INFO
+    loggers:
+      lightning.pytorch:
+        level: INFO
+      src:
+        level: INFO
+_target_: dssml.runners.DefaultTrainer
+resume: false
+
+plfit:
+  ckpt_path:
+
+pltrainer:
+  accelerator: gpu
+  devices: auto
+  strategy: ddp
+  precision: 32-true
+  max_epochs: 500
+  log_every_n_steps: 50
+  deterministic: false
+  num_nodes: 1
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1.0
+  enable_progress_bar: false
+  profiler: simple
+
+manifest:
+  _target_: dssml.data.helpers.manifests.MepsZarrManifest
+  dataset_path: ${_dataset_path}
+  indices_to_avoid: [31956, 31957, 31958, 31959, 31960, 31961, 31962, 31963, 31964,
+    31965, 31966, 31967, 31968, 31969, 31970, 31971, 31972, 31973, 31974, 31975,
+    31976, 31977, 31978, 31979, 31980, 31981, 31982, 31983, 31984, 31985, 31986,
+    31987, 31988, 31989, 31990, 31991]
+  variables: 
+    - '10si'
+    - '10u'
+    - '10v'
+    - '2d'
+    - '2t'
+    - 'cbh'
+    - 'hcc'
+    - 'lcc'
+    - 'lsm'
+    - 'mcc'
+    - 'sp'
+    - 't_850'
+    - 'tcc'
+    - 'tcw'
+    - 'tp'
+    - 'u_850'
+    - 'v_850'
+    - 'w_850'
+    - 'q_850'
+    - 'z'
+
+
+  reshape_to: [256, 256]
+  splits:
+    type: date_based
+    periods:
+      - train:
+          start: "2021-01-01"
+          end: "2023-12-30"
+      - val:
+          start: "2024-01-11"
+          end: "2024-01-20"
+      - val:
+          start: "2024-03-11"
+          end: "2024-03-20"
+      - val:
+          start: "2024-05-11"
+          end: "2024-05-20"
+      - val:
+          start: "2024-07-11"
+          end: "2024-07-20"
+      - val:
+          start: "2024-09-11"
+          end: "2024-09-20"
+      - val:
+          start: "2024-11-11"
+          end: "2024-11-20"
+      - test:
+          start: "2020-03-04"
+          end: "2020-03-08"
+
+normalizer:
+  _target_: dssml.data.helpers.normalizers.SymRangeNormalizer
+  norm_const: 1.0
+  eps: 1.0e-06
+
+datamodule:
+  _target_: dssml.data.modules.meps.MEPSZarrWindowDataModule
+  dl_kwargs:
+    batch_size: 4          # smaller batch — model is much larger than simple AE
+    num_workers: 16
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 4
+
+
+model:
+  _target_: dssml.models.ae.LDMVAEModel
+  loss_type: "mse+kl"
+  kl_weight: 1.0e-06
+  kl_warmup_steps: 10000
+
+  auto_encoder_conf:
+    _target_: dssml.networks.ae.LDMVariationalAutoEncoder
+    input_channels: 20
+    z_channels: 4
+    ch: 64
+    ch_mult: [1, 2, 4, 4]
+    num_res_blocks: 2
+    attn_resolutions: [16]
+    resolution: 256
+    dropout: 0.0
+  optimizers_conf:
+    - optimizer:
+        _target_: torch.optim.Adam
+        lr: 4.5e-06
+        betas: [0.9, 0.95]
+      scheduler:
+        _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+        T_max: 500000
+        eta_min: 1.0e-07
+
+
+
+
+callbacks:
+  - _target_: dssml.callbacks.meps.ae.LatentSpaceSampler
+    variables: ["2t", "10si", "10u", "10v", "tp", "2d"]
+    output_path: ${_work_dir}/samples.zarr
+    log_interval: 1
+  - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    monitor: val_loss
+    mode: min
+    save_top_k: 3
+    save_last: true
+    filename: "{epoch:03d}-{step:05d}-{val_loss:.4f}"
+    dirpath: ${_work_dir}/checkpoints
+  - _target_: lightning.pytorch.callbacks.LearningRateMonitor
+    logging_interval: epoch
+  - _target_: lightning.pytorch.callbacks.EarlyStopping
+    monitor: val_loss
+    mode: min
+    patience: 20        # stop after 20 epochs with no improvement
+    min_delta: 0.0001   # minimum change to count as improvement
+    verbose: true
+
+logger:
+  _target_: lightning.pytorch.loggers.MLFlowLogger
+  experiment_name: ${_experiment_name}
+  run_name: ${_run_name}
+  tracking_uri: ${_mlflow_tracking_uri}
+  synchronous: false

@@ -1,0 +1,43 @@
+Bootstrap: docker
+From: pytorch/pytorch:2.4.1-cuda12.4-cudnn9-runtime
+
+%files
+    ./pyproject.toml /opt/pyproject.toml
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    
+    apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        && apt-get clean \
+        && rm -rf /var/lib/apt/lists/*
+
+    # 1. Install 'uv' to handle the toml parsing efficiently
+    pip install uv
+
+    # 2. Install dependencies ONLY (ignoring the project itself)
+    # This reads [project.dependencies] from pyproject.toml
+    cd /opt
+    uv pip install --system -r pyproject.toml
+    
+ 
+
+%environment
+    export PYTHONUNBUFFERED=1
+    # PRE-CONFIGURE PYTHONPATH
+    # This tells Python: "Look in /app/src for python modules"
+    export PYTHONPATH=$PYTHONPATH:/app/src
+
+%runscript
+    echo "Testing Python Version"
+    python3 --version
+    echo "Done!"
+    
+
+%labels
+    Author SMHI
+    Version 1.0
+    Description "Python environment with dependencies."
+
+
+

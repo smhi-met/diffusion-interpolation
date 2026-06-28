@@ -1,0 +1,14 @@
+repos:
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.7.1
+    hooks:
+      - id: nbstripout
+  - repo: local
+    hooks:
+    - id: clear-notebooks-output
+      name: clear-notebooks-output
+      files: notebooks/.*\.ipynb$
+      stages: [pre-commit]
+      language: python
+      entry: jupyter nbconvert --ClearOutputPreprocessor.enabled=True --inplace
+      additional_dependencies: [jupyter]

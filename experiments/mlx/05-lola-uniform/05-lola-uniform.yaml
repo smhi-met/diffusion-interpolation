@@ -1,0 +1,238 @@
+# LoLA DCAE — experiment 05: uniform loss weights
+#
+# Architecture:  LoLAAutoEncoder (DCEncoder → LoLASaturation → DCDecoder)
+# Saturation:    softclip2, B=5
+# Loss:          vmse  (variance-normalised MSE)
+# Compression:   256×256 → 16×16  (16×, patch_size=2 + 3 × stride-2 downs)
+# Loss weights:  UNIFORM — all variables at 1.0 except lsm (null)
+#
+# Purpose: ablation baseline against exp 03 (physics-weighted vmse).
+# Isolates the effect of loss weighting: same model, same loss type, all
+# variables treated equally.  Comparison against 03 shows how much the
+# physics weights improve the primary output variables (10u, 10v, 2t, sp/msl,
+# tp, 10si).
+#
+# Key difference from 03-lola-no-norm:
+#   - All loss_weight values = 1.0  (03 uses sp=10, t_850=6, tp=0.025, etc.)
+
+_experiment_name: "05-lola-uniform"
+_run_name: "lola_uniform_${now:%Y%m%d_%H%M%S}"
+_work_dir: ${oc.env:PWD}/_work/${_experiment_name}/${_run_name}
+_assets_dir: ${oc.env:PWD}/_assets
+_dataset_path: "/mnt/tier1/project/p200177/DE_371_bis/meps-2p5km-2020-2025-1h-v2_subdomain_subvars_rechu.zarr"
+_mlflow_tracking_uri: file:./_saved/mlflow
+
+hydra:
+  job_logging:
+    root:
+      level: INFO
+    loggers:
+      lightning.pytorch:
+        level: INFO
+      src:
+        level: INFO
+
+_target_: dssml.runners.DefaultTrainer
+resume: false
+
+plfit:
+  ckpt_path:
+
+pltrainer:
+  accelerator: gpu
+  devices: auto
+  strategy: ddp
+  precision: 32-true
+  max_epochs: 500
+  log_every_n_steps: 50
+  deterministic: false
+  num_nodes: 1
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1.0
+  enable_progress_bar: false
+  profiler: simple
+
+manifest:
+  _target_: dssml.data.helpers.manifests.MepsZarrManifest
+  dataset_path: ${_dataset_path}
+  indices_to_avoid: [31956, 31957, 31958, 31959, 31960, 31961, 31962, 31963, 31964,
+    31965, 31966, 31967, 31968, 31969, 31970, 31971, 31972, 31973, 31974, 31975,
+    31976, 31977, 31978, 31979, 31980, 31981, 31982, 31983, 31984, 31985, 31986,
+    31987, 31988, 31989, 31990, 31991]
+  variables:
+    - name: '10si'        # 10m wind speed
+      normalization: z-score
+      loss_weight: 1.0
+
+    - name: '10u'         # 10m U wind component
+      normalization: z-score
+      loss_weight: 1.0
+
+    - name: '10v'         # 10m V wind component
+      normalization: z-score
+      loss_weight: 1.0
+
+    - name: '2d'          # 2m dewpoint temperature
+      normalization: z-score
+      loss_weight: 1.0
+
+    - name: '2t'          # 2m temperature
+      normalization: z-score
+      loss_weight: 1.0
+
+    - name: 'cbh'         # cloud base height
+      normalization: z-score
+      loss_weight: 1.0
+
+    - name: 'hcc'         # high cloud cover
+      normalization: none
+      loss_weight: 1.0
+
+    - name: 'lcc'         # low cloud cover
+      normalization: none
+      loss_weight: 1.0
+
+    - name: 'lsm'         # land-sea mask — static forcing, input only, no loss
+      normalization: none
+      loss_weight: null
+
+    - name: 'mcc'         # medium cloud cover
+      normalization: none
+      loss_weight: 1.0
+
+    - name: 'sp'          # surface pressure
+      normalization: z-score
+      loss_weight: 1.0
+
+    - name: 't_850'       # temperature at 850 hPa
+      normalization: z-score
+      loss_weight: 1.0
+
+    - name: 'tcc'         # total cloud cover
+      normalization: none
+      loss_weight: 1.0
+
+    - name: 'tcw'         # total column water
+      normalization: std
+      loss_weight: 1.0
+
+    - name: 'tp'          # total precipitation
+      normalization: std
+      loss_weight: 1.0
+
+    - name: 'u_850'       # U wind at 850 hPa
+      normalization: z-score
+      loss_weight: 1.0
+
+    - name: 'v_850'       # V wind at 850 hPa
+      normalization: z-score
+      loss_weight: 1.0
+
+    - name: 'w_850'       # vertical velocity at 850 hPa
+      normalization: z-score
+      loss_weight: 1.0
+
+    - name: 'q_850'       # specific humidity at 850 hPa
+      normalization: std
+      loss_weight: 1.0
+
+  reshape_to: [256, 256]
+  splits:
+    type: date_based
+    periods:
+      - train:
+          start: "2021-01-01"
+          end: "2023-12-30"
+      - val:
+          start: "2024-01-11"
+          end: "2024-01-20"
+      - val:
+          start: "2024-03-11"
+          end: "2024-03-20"
+      - val:
+          start: "2024-05-11"
+          end: "2024-05-20"
+      - val:
+          start: "2024-07-11"
+          end: "2024-07-20"
+      - val:
+          start: "2024-09-11"
+          end: "2024-09-20"
+      - val:
+          start: "2024-11-11"
+          end: "2024-11-20"
+      - test:
+          start: "2020-03-04"
+          end: "2020-03-08"
+
+normalizer:
+  _target_: dssml.data.helpers.normalizers.MultiNormalizer
+
+datamodule:
+  _target_: dssml.data.modules.meps.MEPSZarrWindowDataModule
+  dl_kwargs:
+    batch_size: 4
+    num_workers: 16
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 4
+
+model:
+  _target_: dssml.models.ae.LoLADCAEModel
+  loss_type: "vmse"
+  vmse_weight: 1.0
+  l1_weight: 1.0
+  l2_weight: 1.0
+  vrmse_weight: 1.0
+  noise_std: 0.0
+  ae_conf:
+    _target_: dssml.networks.ae.LoLAAutoEncoder
+    in_channels: 19
+    latent_channels: 32
+    hid_channels: [96, 192, 384, 384]
+    hid_blocks: [2, 2, 2, 2]
+    patch_size: 2
+    stride: 2
+    saturation_mode: "softclip2"
+    saturation_bound: 5.0
+    attn_levels: [2]
+    dropout: 0.0
+    identity_init: true
+    residual_autoencoding: true
+  optimizers_conf:
+    - optimizer:
+        _target_: torch.optim.Adam
+        lr: 4.5e-06
+        betas: [0.9, 0.95]
+      scheduler:
+        _target_: torch.optim.lr_scheduler.CosineAnnealingLR
+        T_max: 500000
+        eta_min: 1.0e-07
+
+callbacks:
+  - _target_: dssml.callbacks.meps.ae.LatentSpaceSampler
+    variables: ["2t", "10si", "10u", "10v", "tp", "2d"]
+    output_path: ${_work_dir}/samples.zarr
+    log_interval: 1
+  - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    monitor: val_loss
+    mode: min
+    save_top_k: 3
+    save_last: true
+    filename: "{epoch:03d}-{step:05d}-{val_loss:.4f}"
+    dirpath: ${_work_dir}/checkpoints
+  - _target_: lightning.pytorch.callbacks.LearningRateMonitor
+    logging_interval: epoch
+  - _target_: lightning.pytorch.callbacks.EarlyStopping
+    monitor: val_loss
+    mode: min
+    patience: 20
+    min_delta: 0.0001
+    verbose: true
+
+logger:
+  _target_: lightning.pytorch.loggers.MLFlowLogger
+  experiment_name: ${_experiment_name}
+  run_name: ${_run_name}
+  tracking_uri: ${_mlflow_tracking_uri}
+  synchronous: false
