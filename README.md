@@ -1,4 +1,4 @@
-# Difuusion Interpolation
+# Diffusion Interpolation
 ## Table of files
   - ##### Python setup
     - [Python Setup on Atos](./docs/env-on-atos.md)
@@ -34,7 +34,7 @@ pre-commit install
 
 
 ## Experiments
-Eech person has a file to list the experiments one's do. See [here](./README.md#experiments-files )
+Each person has a file to list the experiments one's do. See [here](./README.md#experiments-files )
  
 Each experiment need to have its own configurations overrides in a config file `some-configs.yml` and a job file with a name example `some-job.sh`
 
@@ -50,7 +50,7 @@ CONFIG_FILE=/path/to/job-file/some-configs.yaml ./run.sh bash /path/to/job-file/
 `hydra_args` are optional.
 
 
-in commands `bash` may  need tp be repaced by `srun` for interatice environments.
+in commands `bash` may  need tp be repaced by `srun` for interactive environments.
 ### MeluXina
 ```bash
 
@@ -81,9 +81,9 @@ _run_name: "test_${now:%Y%m%d_%H%M%S}"
 _work_dir: ${hydra:runtime.cwd}/_work/${_experiment_name}/${_run_name}
 _dataset_path: "path/to/dataset"
 ```
-Otherwize it will fail. the values are not suposed to be the same as the example but the keys should be there.
+Otherwise it will fail. the values are not supposed to be the same as the example but the keys should be there.
 
-`_dataset_path` is optional but needed when working with containrized environment.
+`_dataset_path` is optional but needed when working with containerized environment.
 
 - To control the logging we need to have this **optional** content in the config file or in the main config.yaml file
 
@@ -103,7 +103,7 @@ hydra:
 
 
 
-## Using the contianer
+## Using the container
 
 ## Build the container
 Each time we change essential things in `pyproject.toml` we need to rebuild the container. To do that we need to run the following command in the terminal from the project root directory
